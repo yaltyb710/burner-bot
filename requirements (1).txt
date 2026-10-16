@@ -1,0 +1,4 @@
+websockets
+solders
+base58
+requests
