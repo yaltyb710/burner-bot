@@ -1,4 +1,7 @@
-websockets
+flask
+solana
 solders
-base58
+websockets
 requests
+python-dotenv
+base58
