@@ -1,7 +1,6 @@
 flask
-solana
-solders
-websockets
 requests
-python-dotenv
+solders
 base58
+websockets
+python-dotenv
