@@ -1,31 +1,39 @@
 import os, time, threading, requests, base64
 from flask import Flask
 from solders.keypair import Keypair
-from solana.rpc.api import Client
 from solders.transaction import VersionedTransaction
 
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-RPC_URL = os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com")
+RPC_URL = os.getenv("RPC_URL")
 BUY_AMOUNT = 0.004
 BUY_DELAY = 18
 SELL_DELAY = 70
 
 app = Flask(__name__)
 
-# تحميل المحفظة
 keypair = None
-client = None
 try:
     if PRIVATE_KEY:
         keypair = Keypair.from_base58_string(PRIVATE_KEY.strip())
-        client = Client(RPC_URL)
-        print(f"Wallet: {keypair.pubkey()}")
-    else:
-        print("No PRIVATE_KEY found")
+        print(f"Wallet loaded: {keypair.pubkey()}")
 except Exception as e:
     print(f"Wallet error: {e}")
 
 seen = set()
+
+def send_tx(tx):
+    try:
+        b64 = base64.b64encode(bytes(tx)).decode('utf-8')
+        data = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [b64, {"encoding": "base64", "skipPreflight": True}]
+        }
+        r = requests.post(RPC_URL, json=data, timeout=15)
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 def get_coins():
     try:
@@ -35,14 +43,12 @@ def get_coins():
         return []
 
 def trade(mint):
-    if not keypair or not client:
-        print("No wallet, skip trade")
+    if not keypair:
         return
     try:
-        print(f"Waiting {BUY_DELAY}s for {mint[:6]}...")
+        print(f"Waiting {BUY_DELAY}s for {mint[:6]}")
         time.sleep(BUY_DELAY)
-        print(f"Buying {mint[:6]} with {BUY_AMOUNT} SOL")
-        
+        print(f"Buying {mint[:6]} {BUY_AMOUNT} SOL")
         payload = {
             "publicKey": str(keypair.pubkey()),
             "action": "buy",
@@ -55,19 +61,17 @@ def trade(mint):
         }
         res = requests.post("https://pumpportal.fun/api/trade-local-validation", json=payload, timeout=30)
         if res.status_code != 200:
-            print(f"Buy API failed: {res.text[:200]}")
+            print(f"Buy fail: {res.text[:200]}")
             return
-        tx_b64 = res.json() if isinstance(res.json(), str) else res.text.strip()
-        # clean quotes
-        tx_b64 = tx_b64.strip().strip('"')
-        tx_bytes = base64.b64decode(tx_b64)
+        b64tx = res.text.strip().strip('"').strip("'")
+        tx_bytes = base64.b64decode(b64tx)
         tx = VersionedTransaction.from_bytes(tx_bytes)
         tx.sign([keypair])
-        sig = client.send_transaction(tx).value
-        print(f"BOUGHT {mint[:6]} https://solscan.io/tx/{sig}")
+        result = send_tx(tx)
+        print(f"BOUGHT {mint[:6]} {result}")
 
         time.sleep(SELL_DELAY)
-        print(f"Selling {mint[:6]} 100%")
+        print(f"Selling {mint[:6]}")
         payload2 = {
             "publicKey": str(keypair.pubkey()),
             "action": "sell",
@@ -79,39 +83,33 @@ def trade(mint):
             "pool": "pump"
         }
         res2 = requests.post("https://pumpportal.fun/api/trade-local-validation", json=payload2, timeout=30)
-        if res2.status_code != 200:
-            print(f"Sell API failed: {res2.text[:200]}")
-            return
-        tx_b64_2 = (res2.json() if isinstance(res2.json(), str) else res2.text).strip().strip('"')
-        tx_bytes2 = base64.b64decode(tx_b64_2)
+        b64tx2 = res2.text.strip().strip('"').strip("'")
+        tx_bytes2 = base64.b64decode(b64tx2)
         tx2 = VersionedTransaction.from_bytes(tx_bytes2)
         tx2.sign([keypair])
-        sig2 = client.send_transaction(tx2).value
-        print(f"SOLD {mint[:6]} https://solscan.io/tx/{sig2}")
-
+        result2 = send_tx(tx2)
+        print(f"SOLD {mint[:6]} {result2}")
     except Exception as e:
-        print(f"Trade failed {mint[:6]}: {e}")
+        print(f"Trade err {mint[:6]}: {e}")
 
 def loop():
     while True:
         try:
-            coins = get_coins()
-            for c in coins:
+            for c in get_coins():
                 m = c.get('mint')
                 if m and m not in seen:
                     seen.add(m)
-                    print(f"NEW {c.get('symbol')} {m[:6]} MC ${c.get('usd_market_cap',0):.0f}")
+                    print(f"NEW {c.get('symbol')} {m[:6]}")
                     threading.Thread(target=trade, args=(m,), daemon=True).start()
         except Exception as e:
-            print(f"Loop err {e}")
-        print(f"Scanning... buy {BUY_AMOUNT} after {BUY_DELAY}s")
+            print(f"loop err {e}")
         time.sleep(5)
 
 threading.Thread(target=loop, daemon=True).start()
 
 @app.route('/')
 def home():
-    return f"Bot Live - {keypair.pubkey() if keypair else 'No wallet'}"
+    return f"Bot Live {keypair.pubkey() if keypair else 'no key'}"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
