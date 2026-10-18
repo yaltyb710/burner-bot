@@ -7,7 +7,7 @@ from solders.transaction import VersionedTransaction
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RPC_URL = os.getenv("RPC_URL")
 BUY_AMOUNT = 0.004
-BUY_DELAY = 18
+BUY_DELAY = 35  # زدنا الانتظار من 18 لـ 35 ثانية
 SELL_DELAY = 70
 
 app = Flask(__name__)
@@ -33,22 +33,49 @@ def send_tx(tx):
 def trade(mint, sym):
     if not keypair: return
     try:
-        print(f"Waiting {BUY_DELAY}s for {sym}...", flush=True)
+        print(f"Waiting {BUY_DELAY}s for {sym} {mint[:6]} to be indexed...", flush=True)
         time.sleep(BUY_DELAY)
-        print(f"Buying {sym} {mint[:6]}...", flush=True)
-        payload = {"publicKey":str(keypair.pubkey()),"action":"buy","mint":mint,"denominatedInSol":"true","amount":BUY_AMOUNT,"slippage":25,"priorityFee":0.001,"pool":"pump"}
-        res = requests.post("https://pumpportal.fun/api/trade-local-validation", json=payload, timeout=30)
-        print(f"Buy API {res.status_code}", flush=True)
-        if res.status_code != 200: return
+        
+        # نحاول 3 مرات لو قال 404
+        for attempt in range(3):
+            print(f"Buying {sym} attempt {attempt+1}...", flush=True)
+            payload = {
+                "publicKey": str(keypair.pubkey()),
+                "action": "buy",
+                "mint": mint,
+                "denominatedInSol": "true",
+                "amount": BUY_AMOUNT,
+                "slippage": 30,
+                "priorityFee": 0.002,
+                "pool": "auto"
+            }
+            res = requests.post("https://pumpportal.fun/api/trade-local-validation", json=payload, timeout=30)
+            print(f"Buy API {res.status_code}: {res.text[:250]}", flush=True)
+            
+            if res.status_code == 200:
+                break
+            if res.status_code == 404:
+                print(f"Not indexed yet, retry in 7s...", flush=True)
+                time.sleep(7)
+                continue
+            else:
+                return
+
+        if res.status_code != 200:
+            print(f"Failed to buy {sym} after retries", flush=True)
+            return
+
         b64tx = res.text.strip().strip('"')
         tx = VersionedTransaction.from_bytes(base64.b64decode(b64tx))
         tx.sign([keypair])
         send_tx(tx)
-        print(f"BOUGHT {sym}", flush=True)
+        print(f"BOUGHT {sym} {mint[:6]}", flush=True)
+        
         time.sleep(SELL_DELAY)
-        print(f"Selling {sym}...", flush=True)
-        payload2 = {"publicKey":str(keypair.pubkey()),"action":"sell","mint":mint,"denominatedInSol":"false","amount":"100%","slippage":25,"priorityFee":0.001,"pool":"pump"}
+        print(f"Selling {sym} 100%...", flush=True)
+        payload2 = {"publicKey":str(keypair.pubkey()),"action":"sell","mint":mint,"denominatedInSol":"false","amount":"100%","slippage":30,"priorityFee":0.002,"pool":"auto"}
         res2 = requests.post("https://pumpportal.fun/api/trade-local-validation", json=payload2, timeout=30)
+        print(f"Sell API {res2.status_code}", flush=True)
         b64tx2 = res2.text.strip().strip('"')
         tx2 = VersionedTransaction.from_bytes(base64.b64decode(b64tx2))
         tx2.sign([keypair])
@@ -64,7 +91,7 @@ async def ws_loop():
             async with websockets.connect(uri) as ws:
                 print("WebSocket CONNECTED", flush=True)
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
-                print("Subscribed to new tokens - waiting...", flush=True)
+                print("Subscribed - waiting for new coins...", flush=True)
                 async for message in ws:
                     try:
                         data = json.loads(message)
@@ -72,7 +99,7 @@ async def ws_loop():
                         sym = data.get("symbol","?")
                         if mint and mint not in seen:
                             seen.add(mint)
-                            print(f"NEW {sym} {mint[:6]} via WS MC ${data.get('marketCapSol',0)}", flush=True)
+                            print(f"NEW {sym} {mint[:6]} via WS", flush=True)
                             threading.Thread(target=trade, args=(mint,sym), daemon=True).start()
                     except:
                         pass
@@ -87,7 +114,7 @@ threading.Thread(target=start_ws, daemon=True).start()
 
 @app.route('/')
 def home():
-    return f"Bot Live WS - Seen {len(seen)}"
+    return f"Bot Live WS V4 - Seen {len(seen)}"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
